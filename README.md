@@ -1,18 +1,18 @@
 # Asyncio For Robotics
 | Requirements | Compatibility | Tests |
 |---|---|---|
-| [![python](https://img.shields.io/pypi/pyversions/asyncio_for_robotics?logo=python&logoColor=white&label=Python&color=%20blue)](https://pypi.org/project/asyncio_for_robotics/)<br>[![mit](https://img.shields.io/badge/License-MIT-gold)](https://opensource.org/license/mit) | [![ros](https://img.shields.io/badge/ROS_2-Humble%20%7C%20Jazzy-blue?logo=ros)](https://github.com/ros2)<br>[![zenoh](https://img.shields.io/badge/Zenoh-%3E%3D1.0-blue)](https://zenoh.io/) | [![Python](https://github.com/2lian/asyncio-for-robotics/actions/workflows/python-pytest.yml/badge.svg)](https://github.com/2lian/asyncio-for-robotics/actions/workflows/python-pytest.yml)<br>[![ROS 2](https://github.com/2lian/asyncio-for-robotics/actions/workflows/ros-pytest.yml/badge.svg)](https://github.com/2lian/asyncio-for-robotics/actions/workflows/ros-pytest.yml) |
+| [![python](https://img.shields.io/pypi/pyversions/asyncio_for_robotics?logo=python&logoColor=white&label=Python&color=%20blue)](https://pypi.org/project/asyncio_for_robotics/)<br>[![mit](https://img.shields.io/badge/License-MIT-gold)](https://opensource.org/license/mit) | [![ros](https://img.shields.io/badge/ROS_2-Humble%20%7C%20Jazzy%20%7C%20Lyrical-blue?logo=ros)](https://github.com/ros2)<br>[![zenoh](https://img.shields.io/badge/Zenoh-%3E%3D1.0-blue)](https://zenoh.io/) | [![Python](https://github.com/2lian/asyncio-for-robotics/actions/workflows/python-pytest.yml/badge.svg)](https://github.com/2lian/asyncio-for-robotics/actions/workflows/python-pytest.yml)<br>[![ROS 2](https://github.com/2lian/asyncio-for-robotics/actions/workflows/ros-pytest.yml/badge.svg)](https://github.com/2lian/asyncio-for-robotics/actions/workflows/ros-pytest.yml) |
 
 The Asyncio For Robotics (`afor`) library makes `asyncio` usable with ROS 2, Zenoh and more, letting you write linear, testable, and non-blocking Python code.
 
-- Better syntax.
-- Only native python: Better docs and support.
-- Simplifies testing.
+- Native async Python: Extensive documentation, tooling and community.
+- One single code base, many transport backend.
+- Testable scheduling behavior, independent from the backend.
 
-*Will this make my code slower?* [Likely not.](https://github.com/2lian/asyncio-for-robotics/tree/main/README.md#about-speed)
+<img width="400" height="216" alt="afor flow" src="https://github.com/user-attachments/assets/084edf6f-60b5-488a-88d6-bc1c9e8d14f5" />
 
-*Will this make my code faster?* No. However, `asyncio` will help YOU write
-better, faster code.
+
+*Will this make my code faster?* [Yes and no.](#about-speed). `afor` has 5~100 μs of overhead, but we personaly observed 4x latency and CPU improvements by having access to better scheduling methods.
 
 > [!TIP]
 > `asyncio_for_robotics` interfaces do not replace their primary interfaces! We add capabilities, giving you more choices, not less.
@@ -22,20 +22,16 @@ better, faster code.
 
 ### Barebone
 
-Compatible with ROS 2 (`jazzy`,`humble` and newer) out of the box. This library is pure python (>=3.10), so it installs easily.
+Out of the box support for ROS 2 (`jazzy`,`humble`, `lyrical`) and Zenoh. This library is pure python (>=3.10), so it installs easily.
 
 ```bash
 pip install asyncio_for_robotics
-```
-
-### Along with Zenoh
-
-```bash
-pip install asyncio_for_robotics eclipse-zenoh
+# if you use Zenoh: `pip install asyncio_for_robotics eclipse-zenoh`
 ```
 
 ## Read more
 
+- [Implement your own interface: UDP and DDS examples](https://github.com/2lian/asyncio-for-robotics/blob/main/own_proto_example.md)
 - [Detailed ROS 2 tutorial](https://github.com/2lian/asyncio-for-robotics/blob/main/using_with_ros.md)
 - [Lifetime with `afor.Scope`](https://github.com/2lian/asyncio-for-robotics/blob/main/using_scope.md) and [Backend's Sessions](https://github.com/2lian/asyncio-for-robotics/blob/main//using_session.md)
 - [Detailed examples](https://github.com/2lian/asyncio-for-robotics/blob/main/asyncio_for_robotics/example)
@@ -47,10 +43,11 @@ pip install asyncio_for_robotics eclipse-zenoh
 - **Rate**: Every tick of a clock. (native)
 - **TextIO**: `stdout` lines of a `Popen` process (and other `TextIO` files). (native)
 - **ROS 2**: Subscriber, Service Client, Service Server.
+- **ROS 2 lyrical AsyncNode**: Subscriber, Service Client, Service Server.
 - **Zenoh**: Subscriber.
-- [Implement your own interface!](https://github.com/2lian/asyncio-for-robotics/blob/main/own_proto_example.md)
 
 ### Additional Projects and Interfaces
+- **[PyZeROS](https://github.com/2lian/pyzeros2)**: Alternative to ROS 2 rclpy, with minimal dependencies.
 - **[gogo_keyboard](https://github.com/2lian/gogo_keyboard)**: Subscribe to keyboard key presses and release.
 - **[asyncio_gazebo](https://github.com/2lian/asyncio-gazebo)**: Subscribe to Gazebo transport.
 
