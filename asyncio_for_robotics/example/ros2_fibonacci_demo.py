@@ -1,20 +1,22 @@
 """ros2_fibonacci_demo.py — comprehensive asyncio patterns demo via Action.
 
-Starts 4 Fibonacci action servers internally and runs 12 demos showing how
+Starts 4 Fibonacci action servers internally and runs 14 demos showing how
 standard asyncio primitives compose naturally with ROS 2 actions.
 
-  01 asyncio.sleep    — sleep runs concurrently while an action is in-flight
-  02 asyncio.gather   — 3 goals dispatched in parallel on one server
-  03 asyncio.Lock     — Lock serialises concurrent goals one-at-a-time
-  04 asyncio.wait     — FIRST_COMPLETED returns as soon as the fastest goal finishes
-  05 asyncio.wait_for — TimeoutError on a slow goal
-  06 asyncio.Event    — Event gates a goal until a signal is set
-  07 asyncio.Semaphore— Semaphore(2) caps concurrent goals at 2
-  08 asyncio.Queue    — producer/consumer pipeline over actions
-  09 feedback         — stream feedback with ``feedback_until_result()``
-  10 cancel           — cancel a long-running goal mid-flight
-  11 abort            — handle ActionAborted raised by the server
-  12 multi-server     — asyncio.gather across 4 independent servers
+  01 call             — simple request/result action call
+  02 asyncio.sleep    — sleep runs concurrently while an action is in-flight
+  03 asyncio.gather   — 3 goals dispatched in parallel on one server
+  04 asyncio.Lock     — Lock serialises concurrent goals one-at-a-time
+  05 asyncio.wait     — FIRST_COMPLETED returns as soon as the fastest goal finishes
+  06 asyncio.wait_for — TimeoutError on a slow goal
+  07 asyncio.Event    — Event gates a goal until a signal is set
+  08 asyncio.Semaphore— Semaphore(2) caps concurrent goals at 2
+  09 asyncio.Queue    — producer/consumer pipeline over actions
+  10 feedback helper  — stream feedback until the result arrives
+  11 feedback raw     — handle ActionFeedbackDone yourself
+  12 cancel           — cancel a long-running goal mid-flight
+  13 abort            — handle ActionAborted raised by the server
+  14 multi-server     — asyncio.gather across 4 independent servers
 
 Run:
     source /opt/ros/jazzy/setup.bash
@@ -30,7 +32,6 @@ from rclpy.action import CancelResponse
 from rclpy.executors import MultiThreadedExecutor
 
 import asyncio_for_robotics.ros2 as afor
-
 
 # ── Server ────────────────────────────────────────────────────────────────────
 
@@ -61,22 +62,43 @@ async def _run_server(action_name: str) -> None:
     )
     with suppress(asyncio.CancelledError):
         async for goal_handle in server.listen_reliable():
-            asyncio.create_task(_handle_goal(goal_handle))
+            afor.Scope.current().task_group.create_task(_handle_goal(goal_handle))
 
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 
 
-async def fibonacci(client: afor.ActionClient, order: int) -> list[int]:
-    result = await client.call(Fibonacci.Goal(order=order))
+async def fibonacci(
+    client: afor.ActionClient,
+    order: int,
+    *,
+    feedback_label: str | None = None,
+) -> list[int]:
+    goal_handle = client.send_goal(Fibonacci.Goal(order=order))
+    if not await goal_handle.accepted:
+        raise afor.ActionRejected("goal was rejected by server")
+
+    async for feedback in goal_handle.feedback_until_result():
+        if feedback_label is not None:
+            print(f"    {feedback_label}: {list(feedback.sequence)}")
+
+    result = await goal_handle.result
     return list(result.sequence)
 
 
-# ── Demos 01–12 ───────────────────────────────────────────────────────────────
+# ── Demos 01–14 ───────────────────────────────────────────────────────────────
 
 
-async def demo_01_sleep(c: afor.ActionClient) -> None:
-    print("[01 sleep]  sleep runs concurrently while action is in-flight")
+async def demo_01_call(c: afor.ActionClient) -> None:
+    print("[01 call]  simple request/result action call (Does not consider feedback)")
+    # server_timeout : wait up to 2s for the server to accept the goal
+    # result_timeout : wait up to 2s for the result after acceptance
+    result = await c.call(Fibonacci.Goal(order=8), server_timeout=2, result_timeout=2)
+    print(f"    PASS  result={list(result.sequence)}\n")
+
+
+async def demo_02_sleep(c: afor.ActionClient) -> None:
+    print("[02 sleep]  sleep runs concurrently while action is in-flight")
     sleep_done = asyncio.Event()
 
     async def sleeper():
@@ -84,14 +106,15 @@ async def demo_01_sleep(c: afor.ActionClient) -> None:
         sleep_done.set()
 
     asyncio.create_task(sleeper())
-    result = await fibonacci(c, 10)  # ~0.5 s
+    result = await fibonacci(c, 10, feedback_label="feedback")  # ~0.5 s
 
     assert sleep_done.is_set()
-    print(f"    PASS  result[-1]={result[-1]}, sleep fired before action returned\n")
+    print(
+        f"    PASS  result[-1]={result[-1]}, sleep fired before action returned\n")
 
 
-async def demo_02_gather(c: afor.ActionClient) -> None:
-    print("[02 gather]  3 goals run in parallel on one server")
+async def demo_03_gather(c: afor.ActionClient) -> None:
+    print("[03 gather]  3 goals run in parallel on one server")
     start = time.monotonic()
     r5, r8, r10 = await asyncio.gather(
         fibonacci(c, 5),
@@ -99,23 +122,36 @@ async def demo_02_gather(c: afor.ActionClient) -> None:
         fibonacci(c, 10),
     )
     elapsed = time.monotonic() - start
-    print(f"    PASS  elapsed={elapsed:.2f}s  results={r5[-1]}, {r8[-1]}, {r10[-1]}\n")
+    print(
+        f"    PASS  elapsed={elapsed:.2f}s  results={r5[-1]}, {r8[-1]}, {r10[-1]}\n")
 
 
-async def demo_03_lock(c: afor.ActionClient) -> None:
-    print("[03 lock]  Lock serialises goals one-at-a-time")
+async def demo_04_lock(c: afor.ActionClient) -> None:
+    print("[04 lock]  Lock serialises goals one-at-a-time")
     lock = asyncio.Lock()
+    active = 0
+    peak = 0
 
     async def locked_fib(order: int) -> list[int]:
+        nonlocal active, peak
         async with lock:
-            return await fibonacci(c, order)
+            active += 1
+            peak = max(peak, active)
+            print(f"    lock acquired: active={active}")
+            try:
+                return await fibonacci(c, order)
+            finally:
+                active -= 1
+                print(f"    lock released: active={active}")
 
     results = await asyncio.gather(locked_fib(5), locked_fib(5), locked_fib(5))
-    print(f"    PASS  3 goals ran one by one, results={[r[-1] for r in results]}\n")
+    assert peak == 1
+    print(
+        f"    PASS  peak concurrent={peak}, results={[r[-1] for r in results]}\n")
 
 
-async def demo_04_wait_first(c: afor.ActionClient) -> None:
-    print("[04 wait]  FIRST_COMPLETED returns when the fastest goal finishes")
+async def demo_05_wait_first(c: afor.ActionClient) -> None:
+    print("[05 wait]  FIRST_COMPLETED returns when the fastest goal finishes")
     fast = asyncio.create_task(fibonacci(c, 3))
     slow = asyncio.create_task(fibonacci(c, 20))
 
@@ -129,16 +165,16 @@ async def demo_04_wait_first(c: afor.ActionClient) -> None:
     print(f"    PASS  fast result={fast.result()[-1]}\n")
 
 
-async def demo_05_wait_for(c: afor.ActionClient) -> None:
-    print("[05 wait_for]  TimeoutError on a slow goal")
+async def demo_06_wait_for(c: afor.ActionClient) -> None:
+    print("[06 wait_for]  TimeoutError on a slow goal")
     try:
         await asyncio.wait_for(fibonacci(c, 30), timeout=0.2)
     except asyncio.TimeoutError:
         print("    PASS  TimeoutError raised as expected\n")
 
 
-async def demo_06_event(c: afor.ActionClient) -> None:
-    print("[06 event]  Event gates a goal until a signal is set")
+async def demo_07_event(c: afor.ActionClient) -> None:
+    print("[07 event]  Event gates a goal until a signal is set")
     ready = asyncio.Event()
 
     async def producer():
@@ -153,8 +189,8 @@ async def demo_06_event(c: afor.ActionClient) -> None:
     print(f"    PASS  result[-1]={result[-1]}\n")
 
 
-async def demo_07_semaphore(c: afor.ActionClient) -> None:
-    print("[07 semaphore]  Semaphore(2) caps concurrent goals at 2")
+async def demo_08_semaphore(c: afor.ActionClient) -> None:
+    print("[08 semaphore]  Semaphore(2) caps concurrent goals at 2")
     sem = asyncio.Semaphore(2)
     concurrent = 0
     peak = 0
@@ -173,8 +209,8 @@ async def demo_07_semaphore(c: afor.ActionClient) -> None:
     print(f"    PASS  peak concurrent={peak} (limit=2)\n")
 
 
-async def demo_08_queue(c: afor.ActionClient) -> None:
-    print("[08 queue]  producer/consumer pipeline over actions")
+async def demo_09_queue(c: afor.ActionClient) -> None:
+    print("[09 queue]  producer/consumer pipeline over actions")
     queue: asyncio.Queue[int | None] = asyncio.Queue()
     results: list[int] = []
 
@@ -195,9 +231,10 @@ async def demo_08_queue(c: afor.ActionClient) -> None:
     print(f"    PASS  results={results}\n")
 
 
-async def demo_09_feedback(c: afor.ActionClient) -> None:
-    print("[09 feedback]  stream feedback with feedback_until_result()")
+async def demo_10_feedback(c: afor.ActionClient) -> None:
+    print("[10 feedback helper]  stream feedback until the result arrives")
     goal_handle = c.send_goal(Fibonacci.Goal(order=8))
+    await goal_handle.accepted
 
     async for feedback in goal_handle.feedback_until_result():
         print(f"    feedback: {list(feedback.sequence)}")
@@ -206,9 +243,24 @@ async def demo_09_feedback(c: afor.ActionClient) -> None:
     print(f"    PASS  result={list(result.sequence)}\n")
 
 
-async def demo_10_cancel(c: afor.ActionClient) -> None:
-    print("[10 cancel]  cancel a long-running goal mid-flight")
+async def demo_11_feedback_raw(c: afor.ActionClient) -> None:
+    print("[11 feedback raw]  handle ActionFeedbackDone yourself")
+    goal_handle = c.send_goal(Fibonacci.Goal(order=8))
+    await goal_handle.accepted
+
+    async for item in goal_handle.feedback.listen():
+        if isinstance(item, afor.ActionFeedbackDone):
+            break
+        print(f"    feedback: {list(item.sequence)}")
+
+    result = await goal_handle.result
+    print(f"    PASS  result={list(result.sequence)}\n")
+
+
+async def demo_12_cancel(c: afor.ActionClient) -> None:
+    print("[12 cancel]  cancel a long-running goal mid-flight")
     goal_handle = c.send_goal(Fibonacci.Goal(order=30))
+    await goal_handle.accepted
 
     async def cancel_later():
         await asyncio.sleep(0.3)
@@ -221,26 +273,30 @@ async def demo_10_cancel(c: afor.ActionClient) -> None:
             print(f"    feedback: {list(feedback.sequence)}")
         await goal_handle.result
     except afor.ActionCanceled as e:
-        print(f"    PASS  cancelled, partial result={list(e.result.sequence)}\n")
+        print(
+            f"    PASS  cancelled, partial result={list(e.result.sequence)}\n")
 
 
-async def demo_11_abort(c: afor.ActionClient) -> None:
-    print("[11 abort]  handle ActionAborted raised by the server")
+async def demo_13_abort(c: afor.ActionClient) -> None:
+    print("[13 abort]  handle ActionAborted raised by the server")
     goal_handle = c.send_goal(Fibonacci.Goal(order=-1))
+    await goal_handle.accepted
 
     try:
+        async for _ in goal_handle.feedback_until_result():
+            pass
         await goal_handle.result
     except afor.ActionAborted as e:
         print(f"    PASS  server aborted, result={list(e.result.sequence)}\n")
 
 
-async def demo_12_multi_server(
+async def demo_14_multi_server(
     c0: afor.ActionClient,
     c1: afor.ActionClient,
     c2: afor.ActionClient,
     c3: afor.ActionClient,
 ) -> None:
-    print("[12 multi-server]  asyncio.gather across 4 independent servers")
+    print("[14 multi-server]  asyncio.gather across 4 independent servers")
     start = time.monotonic()
 
     r0, r1, r2, r3 = await asyncio.gather(
@@ -281,18 +337,20 @@ async def main() -> None:
     )
     print("All servers ready.\n")
 
-    await demo_01_sleep(client_0)
-    await demo_02_gather(client_0)
-    await demo_03_lock(client_0)
-    await demo_04_wait_first(client_0)
-    await demo_05_wait_for(client_0)
-    await demo_06_event(client_0)
-    await demo_07_semaphore(client_0)
-    await demo_08_queue(client_0)
-    await demo_09_feedback(client_0)
-    await demo_10_cancel(client_0)
-    await demo_11_abort(client_0)
-    await demo_12_multi_server(client_0, client_1, client_2, client_3)
+    await demo_01_call(client_0)
+    await demo_02_sleep(client_0)
+    await demo_03_gather(client_0)
+    await demo_04_lock(client_0)
+    await demo_05_wait_first(client_0)
+    await demo_06_wait_for(client_0)
+    await demo_07_event(client_0)
+    await demo_08_semaphore(client_0)
+    await demo_09_queue(client_0)
+    await demo_10_feedback(client_0)
+    await demo_11_feedback_raw(client_0)
+    await demo_12_cancel(client_0)
+    await demo_13_abort(client_0)
+    await demo_14_multi_server(client_0, client_1, client_2, client_3)
 
     print("All demos done!")
 

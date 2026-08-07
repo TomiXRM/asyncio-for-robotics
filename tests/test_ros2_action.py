@@ -4,8 +4,10 @@ pytest.importorskip("rclpy")
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from typing import Any, AsyncGenerator, Generator
 
+from action_msgs.msg import GoalStatus
 from example_interfaces.action import Fibonacci
 from rclpy.action import CancelResponse, GoalResponse
 from rclpy.executors import MultiThreadedExecutor
@@ -123,6 +125,42 @@ async def test_call_returns_result(
     result = await afor.soft_wait_for(client.call(Fibonacci.Goal(order=5)), 3)
     assert not isinstance(result, TimeoutError)
     assert list(result.sequence) == [0, 1, 1, 2, 3, 5]
+
+
+async def test_call_server_timeout(client: afor.ActionClient):
+    """call() can time out while waiting for the action server."""
+    with pytest.raises(asyncio.TimeoutError):
+        await client.call(Fibonacci.Goal(order=5), server_timeout=0.1)
+
+
+async def test_call_result_timeout(
+    server: afor.ActionServer, client: afor.ActionClient
+):
+    """call() can time out while waiting for an accepted goal to finish."""
+    with pytest.raises(asyncio.TimeoutError):
+        await client.call(
+            Fibonacci.Goal(order=30),
+            server_timeout=2,
+            result_timeout=0.1,
+        )
+
+
+async def test_late_result_after_cancelled_future_is_ignored():
+    """A ROS result arriving after asyncio cancellation must not log InvalidStateError."""
+    loop = asyncio.get_running_loop()
+    gh = afor.ClientGoalHandle(loop, scope=None)
+    gh.result.cancel()
+
+    ros_result_future = loop.create_future()
+    ros_result_future.set_result(
+        SimpleNamespace(
+            status=GoalStatus.STATUS_SUCCEEDED,
+            result=Fibonacci.Result(sequence=[0, 1]),
+        )
+    )
+
+    gh._on_result(ros_result_future)
+    assert gh.result.cancelled()
 
 
 async def test_feedback_streaming(server: afor.ActionServer, client: afor.ActionClient):
